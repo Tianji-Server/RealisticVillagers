@@ -2,20 +2,28 @@ package me.matsubara.realisticvillagers.util;
 
 import com.comphenix.protocol.utility.MinecraftVersion;
 import com.google.common.base.Preconditions;
+import com.google.gson.JsonParser;
 import com.mojang.authlib.GameProfile;
 import com.mojang.authlib.properties.Property;
 import me.matsubara.realisticvillagers.RealisticVillagers;
 import me.matsubara.realisticvillagers.files.Config;
 import net.md_5.bungee.api.ChatColor;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.bukkit.Color;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.block.BlockFace;
 import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.entity.Villager;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.SkullMeta;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.util.Vector;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
@@ -44,10 +52,26 @@ import java.util.regex.Pattern;
 public final class PluginUtils {
 
     private static final Pattern PATTERN = Pattern.compile("&(#[\\da-fA-F]{6})");
-    private static final Set<String> IGNORE_METHODS = Set.of("spawnLeprechaun", "spawnShop");
     private static final NavigableMap<Integer, String> ROMAN_NUMERALS = new TreeMap<>();
 
     private static final Map<String, Color> COLORS_BY_NAME = new HashMap<>();
+    private static final BlockFace[] CLOCKWISE = {
+            BlockFace.NORTH,
+            BlockFace.NORTH_NORTH_EAST,
+            BlockFace.NORTH_EAST,
+            BlockFace.EAST_NORTH_EAST,
+            BlockFace.EAST,
+            BlockFace.EAST_SOUTH_EAST,
+            BlockFace.SOUTH_EAST,
+            BlockFace.SOUTH_SOUTH_EAST,
+            BlockFace.SOUTH,
+            BlockFace.SOUTH_SOUTH_WEST,
+            BlockFace.SOUTH_WEST,
+            BlockFace.WEST_SOUTH_WEST,
+            BlockFace.WEST,
+            BlockFace.WEST_NORTH_WEST,
+            BlockFace.NORTH_WEST,
+            BlockFace.NORTH_NORTH_WEST};
     private static final Color[] COLORS;
 
     private static final MethodHandle SET_PROFILE;
@@ -88,6 +112,27 @@ public final class PluginUtils {
         PROFILE = Reflection.getFieldSetter(craftMetaSkull, "profile");
     }
 
+    public static @Nullable BlockFace yawToFace(float yaw, int type) {
+        if (type == 0x3) {
+            int index = Math.round(yaw / 90f) & 0x3;
+            return CLOCKWISE[index * 4];
+        }
+
+        int arrayLength = type == 0x7 ? 8 : type == 0x15 ? 16 : -1;
+        if (arrayLength == -1) return null;
+
+        int index = Math.round(yaw / (360f / arrayLength)) & (arrayLength - 1);
+        return CLOCKWISE[index];
+    }
+
+    public static float faceToYaw(BlockFace face) {
+        int index = ArrayUtils.indexOf(CLOCKWISE, face);
+        if (index == -1) return 0.0f;
+
+        float yaw = index * 22.5f;
+        return yaw % 360.0f;
+    }
+
     public static Color getRandomColor() {
         return COLORS[ThreadLocalRandom.current().nextInt(COLORS.length)];
     }
@@ -111,10 +156,6 @@ public final class PluginUtils {
         return messages;
     }
 
-    public static @NotNull ItemStack createHead(String texture) {
-        return createHead(texture, false);
-    }
-
     public static @NotNull ItemStack createHead(String texture, boolean isUrl) {
         ItemStack head = new ItemStack(Material.PLAYER_HEAD);
         SkullMeta headMeta = (SkullMeta) head.getItemMeta();
@@ -124,7 +165,11 @@ public final class PluginUtils {
     }
 
     public static void applySkin(SkullMeta meta, String texture, boolean isUrl) {
-        GameProfile profile = new GameProfile(UUID.randomUUID(), null);
+        applySkin(meta, UUID.randomUUID(), texture, isUrl);
+    }
+
+    public static void applySkin(SkullMeta meta, UUID uuid, String texture, boolean isUrl) {
+        GameProfile profile = new GameProfile(uuid, null);
 
         String textureValue = texture;
         if (isUrl) {
@@ -199,17 +244,6 @@ public final class PluginUtils {
         }
 
         return builder.toString();
-    }
-
-    public static boolean spawnCustom() {
-        for (StackTraceElement stacktrace : new Throwable().getStackTrace()) {
-            String method = stacktrace.getMethodName();
-            if (IGNORE_METHODS.contains(method)) return false;
-
-            String clazz = stacktrace.getClassName();
-            if (method.equals("spawn") && clazz.equals("NPCEntity")) return false;
-        }
-        return true;
     }
 
     public static String[] splitData(String string) {
@@ -389,5 +423,32 @@ public final class PluginUtils {
         } catch (IOException exception) {
             exception.printStackTrace();
         }
+    }
+
+    public static String getURLFromTexture(String texture) {
+        // Decode B64.
+        String base64 = new String(Base64.getDecoder().decode(texture));
+
+        // Get url from json.
+        return JsonParser.parseString(base64).getAsJsonObject()
+                .getAsJsonObject("textures")
+                .getAsJsonObject("SKIN")
+                .get("url")
+                .getAsString();
+    }
+
+    public static boolean hasAnyOf(@NotNull Villager villager, NamespacedKey key) {
+        for (ItemStack item : villager.getInventory().getContents()) {
+            if (isItem(item, key)) return true;
+        }
+        return false;
+    }
+
+    public static boolean isItem(ItemStack item, NamespacedKey key) {
+        ItemMeta meta;
+        if (item == null || (meta = item.getItemMeta()) == null) return false;
+
+        PersistentDataContainer container = meta.getPersistentDataContainer();
+        return container.has(key, PersistentDataType.INTEGER);
     }
 }

@@ -1,6 +1,7 @@
 package me.matsubara.realisticvillagers.nms.v1_20_r1;
 
 import com.google.common.base.Preconditions;
+import com.google.common.base.Strings;
 import com.mojang.authlib.GameProfile;
 import com.mojang.authlib.properties.Property;
 import com.mojang.authlib.properties.PropertyMap;
@@ -41,7 +42,6 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.AttributeMap;
@@ -64,6 +64,7 @@ import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.biome.BiomeManager;
 import net.minecraft.world.level.chunk.storage.RegionFile;
+import net.minecraft.world.level.storage.PrimaryLevelData;
 import org.apache.commons.lang.ArrayUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.bukkit.GameMode;
@@ -77,6 +78,7 @@ import org.bukkit.craftbukkit.v1_20_R1.block.CraftBlock;
 import org.bukkit.craftbukkit.v1_20_R1.entity.CraftPlayer;
 import org.bukkit.craftbukkit.v1_20_R1.entity.CraftVillager;
 import org.bukkit.craftbukkit.v1_20_R1.inventory.CraftItemStack;
+import org.bukkit.craftbukkit.v1_20_R1.util.CraftLocation;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Villager;
 import org.bukkit.entity.ZombieVillager;
@@ -84,6 +86,8 @@ import org.bukkit.event.entity.CreatureSpawnEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -151,11 +155,10 @@ public class NMSConverter implements INMSConverter {
                     field,
                     EntityType.VILLAGER,
                     (EntityType.EntityFactory<net.minecraft.world.entity.npc.Villager>) (type, level) -> {
-                        if (PluginUtils.spawnCustom() && level.getWorld() != null && plugin.isEnabledIn(level.getWorld())) {
+                        if (level.getLevelData() instanceof PrimaryLevelData data && plugin.isEnabledIn(data.getLevelName())) {
                             return new VillagerNPC(EntityType.VILLAGER, level);
-                        } else {
-                            return new net.minecraft.world.entity.npc.Villager(EntityType.VILLAGER, level);
                         }
+                        return new net.minecraft.world.entity.npc.Villager(EntityType.VILLAGER, level);
                     });
             Reflection.setFieldUsingUnsafe(field, EntityType.CAT, (EntityType.EntityFactory<Cat>) PetCat::new);
             Reflection.setFieldUsingUnsafe(field, EntityType.PARROT, (EntityType.EntityFactory<Parrot>) PetParrot::new);
@@ -201,9 +204,8 @@ public class NMSConverter implements INMSConverter {
                 EntityType.VILLAGER,
                 level,
                 VillagerType.byBiome(level.getBiome(((CraftBlock) location.getBlock()).getPosition())));
-        baby.finalizeSpawn(level, level.getCurrentDifficultyAt(baby.blockPosition()), MobSpawnType.BREEDING, null, null);
 
-        baby.loadPluginData(new CompoundTag());
+        loadDataFromTag(baby.getBukkitEntity(), "");
         baby.setVillagerName(name);
         baby.setSex(sex);
 
@@ -325,7 +327,7 @@ public class NMSConverter implements INMSConverter {
         if (location.getWorld() == null) return item;
 
         float multiplier = ((CraftWorld) location.getWorld()).getHandle()
-                .getCurrentDifficultyAt(BlockPos.containing(location.getX(), location.getY(), location.getZ()))
+                .getCurrentDifficultyAt(CraftLocation.toBlockPosition(location))
                 .getSpecialMultiplier();
 
         double chance = ItemStackUtils.getSlotByItem(item) != null ? 0.5d : 0.25f;
@@ -388,8 +390,8 @@ public class NMSConverter implements INMSConverter {
                     if (connection == null) continue;
                     if (connection.getPlayer().is(handle)) return true;
                 }
-            } catch (Throwable throwable) {
-                throwable.printStackTrace();
+            } catch (Throwable ignored) {
+
             }
         }
         return false;
@@ -399,6 +401,50 @@ public class NMSConverter implements INMSConverter {
     public void refreshSchedules() {
         refreshSchedule("baby");
         refreshSchedule("default");
+    }
+
+    @Override
+    public IVillagerNPC getNPCFromTag(String tag) {
+        try {
+            return OfflineVillagerNPC.from(TagParser.parseTag(tag));
+        } catch (CommandSyntaxException exception) {
+            exception.printStackTrace();
+            return null;
+        }
+    }
+
+    @Override
+    public void spawnFromTag(@NotNull Location location, String tag) {
+        Preconditions.checkArgument(location.getWorld() != null && !tag.isEmpty(), "Either world is null or tag is empty!");
+
+        ServerLevel level = ((CraftWorld) location.getWorld()).getHandle();
+        VillagerNPC villager = new VillagerNPC(EntityType.VILLAGER, level);
+
+        loadDataFromTag(villager.getBukkitEntity(), tag);
+
+        float health = (float) Math.min(villager.getMaxHealth(), Config.REVIVE_SPAWN_VALUES_HEALTH.asDouble());
+        villager.setHealth(health);
+
+        int foodLevel = Math.min(20, Config.REVIVE_SPAWN_VALUES_FOOD_LEVEL.asInt());
+        villager.setFoodLevel(foodLevel);
+
+        for (String effectString : Config.REVIVE_SPAWN_VALUES_POTION_EFFECTS.asStringList()) {
+            if (Strings.isNullOrEmpty(effectString)) continue;
+            String[] data = PluginUtils.splitData(effectString);
+
+            PotionEffectType type = PotionEffectType.getByKey(NamespacedKey.minecraft(data[0].toLowerCase()));
+            if (type != null) {
+                // Default = 5 seconds, level 1 (amplifier 0).
+                int duration = data.length > 1 ? PluginUtils.getRangedAmount(data[1]) : 100;
+                int amplifier = data.length > 2 ? PluginUtils.getRangedAmount(data[2]) - 1 : 0;
+                villager.getBukkitEntity().addPotionEffect(new PotionEffect(type, duration, amplifier));
+            }
+        }
+
+        villager.moveTo(location.getX(), location.getY(), location.getZ(), location.getYaw(), 0.0f);
+        villager.setRevivingTicks(60);
+
+        level.addFreshEntity(villager, CreatureSpawnEvent.SpawnReason.DEFAULT);
     }
 
     private void refreshSchedule(@NotNull String name) {
@@ -468,8 +514,11 @@ public class NMSConverter implements INMSConverter {
             double zc = pos.getDouble(2);
 
             UUID uuid = compound.getUUID("UUID");
-            OfflineVillagerNPC npc = OfflineVillagerNPC.from(uuid, data, world, xc, yc, zc);
-            plugin.getTracker().getOfflineVillagers().add(npc);
+
+            Set<IVillagerNPC> offlines = plugin.getTracker().getOfflineVillagers();
+            if (offlines.stream().noneMatch(npc -> npc.getUniqueId().equals(uuid))) {
+                offlines.add(OfflineVillagerNPC.from(uuid, data, world, xc, yc, zc));
+            }
         }
     }
 

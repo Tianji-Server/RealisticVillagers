@@ -8,7 +8,6 @@ import com.comphenix.protocol.events.PacketEvent;
 import com.comphenix.protocol.wrappers.Pair;
 import com.comphenix.protocol.wrappers.WrappedGameProfile;
 import com.comphenix.protocol.wrappers.WrappedSignedProperty;
-import com.google.gson.JsonParser;
 import com.mojang.authlib.properties.Property;
 import com.mojang.authlib.properties.PropertyMap;
 import lombok.Getter;
@@ -17,9 +16,9 @@ import me.matsubara.realisticvillagers.entity.IVillagerNPC;
 import me.matsubara.realisticvillagers.event.VillagerRemoveEvent;
 import me.matsubara.realisticvillagers.files.Config;
 import me.matsubara.realisticvillagers.files.Messages;
-import me.matsubara.realisticvillagers.listener.npc.NPCHandler;
-import me.matsubara.realisticvillagers.listener.protocol.DisguiseHandler;
-import me.matsubara.realisticvillagers.listener.protocol.VillagerHandler;
+import me.matsubara.realisticvillagers.handler.npc.NPCHandler;
+import me.matsubara.realisticvillagers.handler.protocol.DisguiseHandler;
+import me.matsubara.realisticvillagers.handler.protocol.VillagerHandler;
 import me.matsubara.realisticvillagers.listener.spawn.BukkitSpawnListeners;
 import me.matsubara.realisticvillagers.listener.spawn.PaperSpawnListeners;
 import me.matsubara.realisticvillagers.npc.NPC;
@@ -137,11 +136,8 @@ public final class VillagerTracker implements Listener {
                 if (!(entity instanceof Vehicle vehicle)) return;
 
                 for (Entity passenger : vehicle.getPassengers()) {
-                    if (!(passenger instanceof Villager villager)) continue;
-                    if (!handler.isInvalidEntity(villager)) continue;
-
-                    Optional<NPC> npc = getNPC(villager.getEntityId());
-                    npc.ifPresent(value -> handler.handleNPCLocation(event, villager, value));
+                    if (!(passenger instanceof Villager villager) || isInvalid(villager)) continue;
+                    getNPC(villager.getEntityId()).ifPresent(value -> handler.handleNPCLocation(event, villager, value));
                 }
             }
         });
@@ -229,7 +225,7 @@ public final class VillagerTracker implements Listener {
     @EventHandler
     public void onEntitiesUnload(@NotNull EntitiesUnloadEvent event) {
         for (Entity entity : event.getEntities()) {
-            if (!(entity instanceof Villager villager) || isInvalid(villager)) continue;
+            if (!(entity instanceof Villager villager) || isInvalid(villager, true)) continue;
             updateData(villager);
             removeNPC(entity.getEntityId());
         }
@@ -278,13 +274,20 @@ public final class VillagerTracker implements Listener {
 
     @EventHandler
     public void onVillagerRemove(@NotNull VillagerRemoveEvent event) {
+        IVillagerNPC npc = event.getNPC();
+        handler.getAllowSpawn().remove(npc.getUniqueId());
+
+        Villager bukkit = npc.bukkit();
+        if (isInvalid(bukkit, true)) return;
+
         VillagerRemoveEvent.RemovalReason reason = event.getReason();
         if (reason != VillagerRemoveEvent.RemovalReason.DISCARDED) {
-            if (reason != VillagerRemoveEvent.RemovalReason.KILLED) updateData(event.getNPC().bukkit());
+            if (reason != VillagerRemoveEvent.RemovalReason.KILLED) updateData(bukkit);
             return;
         }
-        markAsDeath(event.getNPC().bukkit());
-        removeNPC(event.getNPC().bukkit().getEntityId());
+
+        markAsDeath(bukkit);
+        removeNPC(bukkit.getEntityId());
     }
 
     @EventHandler
@@ -341,11 +344,9 @@ public final class VillagerTracker implements Listener {
     }
 
     public boolean isInvalid(@NotNull Villager villager, boolean ignoreSkinsState) {
-        PersistentDataContainer container = villager.getPersistentDataContainer();
         return (!ignoreSkinsState && Config.DISABLE_SKINS.asBool())
-                || villager.hasMetadata("shopkeeper")
-                || container.has(plugin.getIgnoreVillagerKey(), PersistentDataType.INTEGER)
-                || !plugin.isEnabledIn(villager.getWorld())
+                || !plugin.getCompatibilityManager().shouldTrack(villager)
+                || plugin.isDisabledIn(villager.getWorld())
                 || plugin.getConverter().getNPC(villager).isEmpty();
     }
 
@@ -591,15 +592,7 @@ public final class VillagerTracker implements Listener {
                 return null;
             }
 
-            // Decode base64.
-            String base64 = new String(Base64.getDecoder().decode(textures.getValue()));
-
-            // Get url from json.
-            String url = JsonParser.parseString(base64).getAsJsonObject()
-                    .getAsJsonObject("textures")
-                    .getAsJsonObject("SKIN")
-                    .get("url")
-                    .getAsString();
+            String url = PluginUtils.getURLFromTexture(textures.getValue());
 
             BufferedImage image = PluginUtils.convertTo64x64(ImageIO.read(new URL(url)));
 

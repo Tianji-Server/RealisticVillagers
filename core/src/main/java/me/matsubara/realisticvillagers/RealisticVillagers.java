@@ -1,23 +1,24 @@
 package me.matsubara.realisticvillagers;
 
 import com.comphenix.protocol.wrappers.Pair;
+import com.comphenix.protocol.wrappers.WrappedSignedProperty;
 import com.google.common.base.Strings;
 import com.google.common.collect.Sets;
 import com.tchristofferson.configupdater.ConfigUpdater;
 import lombok.Getter;
 import lombok.Setter;
 import me.matsubara.realisticvillagers.command.MainCommand;
+import me.matsubara.realisticvillagers.compatibility.CompatibilityManager;
+import me.matsubara.realisticvillagers.compatibility.EMCompatibility;
 import me.matsubara.realisticvillagers.entity.IVillagerNPC;
 import me.matsubara.realisticvillagers.files.Config;
 import me.matsubara.realisticvillagers.files.Messages;
 import me.matsubara.realisticvillagers.gui.types.WhistleGUI;
-import me.matsubara.realisticvillagers.listener.InventoryListeners;
-import me.matsubara.realisticvillagers.listener.OtherListeners;
-import me.matsubara.realisticvillagers.listener.PlayerListeners;
-import me.matsubara.realisticvillagers.listener.VillagerListeners;
+import me.matsubara.realisticvillagers.listener.*;
 import me.matsubara.realisticvillagers.manager.ChestManager;
 import me.matsubara.realisticvillagers.manager.ExpectingManager;
 import me.matsubara.realisticvillagers.manager.InteractCooldownManager;
+import me.matsubara.realisticvillagers.manager.ReviveManager;
 import me.matsubara.realisticvillagers.manager.gift.Gift;
 import me.matsubara.realisticvillagers.manager.gift.GiftCategory;
 import me.matsubara.realisticvillagers.manager.gift.GiftManager;
@@ -27,6 +28,7 @@ import me.matsubara.realisticvillagers.util.ItemBuilder;
 import me.matsubara.realisticvillagers.util.ItemStackUtils;
 import me.matsubara.realisticvillagers.util.PluginUtils;
 import me.matsubara.realisticvillagers.util.Shape;
+import me.matsubara.realisticvillagers.util.customblockdata.CustomBlockData;
 import net.wesjd.anvilgui.AnvilGUI;
 import org.apache.commons.io.FileUtils;
 import org.bukkit.*;
@@ -56,7 +58,6 @@ import java.lang.reflect.Constructor;
 import java.net.URL;
 import java.net.URLConnection;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -73,6 +74,7 @@ public final class RealisticVillagers extends JavaPlugin {
     private final NamespacedKey motherUUIDKey = key("MotherUUID");
     private final NamespacedKey isRingKey = key("IsRing");
     private final NamespacedKey isWhistleKey = key("IsWhistle");
+    private final NamespacedKey isCrossKey = key("IsCross");
     private final NamespacedKey entityTypeKey = key("EntityType");
     private final NamespacedKey chatInteractionTypeKey = key("ChatInteractionType");
     private final NamespacedKey childNameKey = key("ChildName");
@@ -83,7 +85,7 @@ public final class RealisticVillagers extends JavaPlugin {
     private final @Deprecated NamespacedKey tamedByPlayerKey = key("TamedByPlayer");
     private final NamespacedKey tamedByVillagerKey = key("TamedByVillager");
     private final NamespacedKey isBeingLootedKey = key("IsBeingLooted");
-    private final NamespacedKey ignoreVillagerKey = key("IgnoreVillager");
+    private final @Deprecated NamespacedKey ignoreVillagerKey = key("IgnoreVillager");
     private final NamespacedKey villagerNameKey = key("VillagerName");
     private final NamespacedKey divorcePapersKey = key("DivorcePapers");
     private final NamespacedKey raidStatsKey = key("RaidStats");
@@ -97,11 +99,14 @@ public final class RealisticVillagers extends JavaPlugin {
     private VillagerTracker tracker;
     private @Setter Shape ring;
     private @Setter Shape whistle;
+    private @Setter Shape cross;
 
+    private ReviveManager reviveManager;
     private GiftManager giftManager;
     private ChestManager chestManager;
     private ExpectingManager expectingManager;
     private InteractCooldownManager cooldownManager;
+    private CompatibilityManager compatibilityManager;
 
     private Messages messages;
     private INMSConverter converter;
@@ -113,6 +118,9 @@ public final class RealisticVillagers extends JavaPlugin {
 
     private List<String> worlds;
 
+    private static final String VILLAGER_HEAD_TEXTURE = "4ca8ef2458a2b10260b8756558f7679bcb7ef691d41f534efea2ba75107315cc";
+    private static final String UNKNOWN_HEAD_TEXTURE = "badc048a7ce78f7dad72a07da27d85c0916881e5522eeed1e3daf217a38c1a";
+
     public static final List<AnvilGUI.ResponseAction> CLOSE_RESPONSE = Collections.singletonList(AnvilGUI.ResponseAction.close());
     private static final List<String> FILTER_TYPES = List.of("WHITELIST", "BLACKLIST");
     private static final Set<String> SPECIAL_SECTIONS = Sets.newHashSet(
@@ -121,13 +129,25 @@ public final class RealisticVillagers extends JavaPlugin {
             "wedding-ring",
             "whistle",
             "divorce-papers",
+            "cross",
             "change-skin",
             "gui.main.frame",
-            "schedules");
+            "schedules",
+            "revive.head-item");
     private static final List<String> GUI_TYPES = List.of("main", "equipment", "combat", "whistle", "skin", "new-skin");
 
     @Override
     public void onLoad() {
+        compatibilityManager = new CompatibilityManager();
+
+        // Shopkeeper, Citizens & (probably) RainbowsPro; for VillagerMarket, the villager shouldn't have AI in order to work properly.
+        compatibilityManager.addCompatibility(villager -> villager.hasAI() && !villager.hasMetadata("shopkeeper") && !villager.hasMetadata("NPC"));
+
+        // EliteMobs.
+        if (getServer().getPluginManager().getPlugin("EliteMobs") != null) {
+            compatibilityManager.addCompatibility(new EMCompatibility());
+        }
+
         String internalName = Bukkit.getServer().getClass().getPackage().getName().split("\\.")[3].toLowerCase();
         try {
             Class<?> converterClass = Class.forName(INMSConverter.class.getPackageName() + "." + internalName + ".NMSConverter");
@@ -156,38 +176,42 @@ public final class RealisticVillagers extends JavaPlugin {
         saveDefaultConfig();
         messages = new Messages(this);
 
-        // Update files async since we modify a lot of files.
-        CompletableFuture.runAsync(this::updateConfigs).thenRun(() -> getServer().getScheduler().runTask(this, () -> {
-            giftManager = new GiftManager(this);
-            chestManager = new ChestManager(this);
-            expectingManager = new ExpectingManager(this);
-            cooldownManager = new InteractCooldownManager(this);
+        // This may take some time at startup, but it's necessary only once.
+        updateConfigs();
 
-            ring = createWeddingRing();
-            whistle = createWhistle();
+        reviveManager = new ReviveManager(this);
+        giftManager = new GiftManager(this);
+        chestManager = new ChestManager(this);
+        expectingManager = new ExpectingManager(this);
+        cooldownManager = new InteractCooldownManager(this);
+        CustomBlockData.registerListener(this);
 
-            converter.loadData();
+        ring = createWeddingRing();
+        whistle = createWhistle();
+        cross = createCross();
 
-            reloadDefaultTargetEntities();
-            reloadWantedItems();
-            reloadLoots();
+        converter.loadData();
 
-            registerEvents(
-                    (inventoryListeners = new InventoryListeners(this)),
-                    (otherListeners = new OtherListeners(this)),
-                    (playerListeners = new PlayerListeners(this)),
-                    (villagerListeners = new VillagerListeners(this)));
+        reloadDefaultTargetEntities();
+        reloadWantedItems();
+        reloadLoots();
 
-            // Used in previous versions, not needed anymore.
-            FileUtils.deleteQuietly(new File(getDataFolder(), "villagers.yml"));
+        registerEvents(
+                new BlockListeners(this),
+                (inventoryListeners = new InventoryListeners(this)),
+                (otherListeners = new OtherListeners(this)),
+                (playerListeners = new PlayerListeners(this)),
+                (villagerListeners = new VillagerListeners(this)));
 
-            PluginCommand command = getCommand("realisticvillagers");
-            if (command == null) return;
+        // Used in previous versions, not needed anymore.
+        FileUtils.deleteQuietly(new File(getDataFolder(), "villagers.yml"));
 
-            MainCommand main = new MainCommand(this);
-            command.setExecutor(main);
-            command.setTabCompleter(main);
-        }));
+        PluginCommand command = getCommand("realisticvillagers");
+        if (command == null) return;
+
+        MainCommand main = new MainCommand(this);
+        command.setExecutor(main);
+        command.setTabCompleter(main);
     }
 
     private void loadFileOrCreate(String folder, String fileName) {
@@ -201,7 +225,8 @@ public final class RealisticVillagers extends JavaPlugin {
 
         for (World world : Bukkit.getWorlds()) {
             for (Villager villager : world.getEntitiesByClass(Villager.class)) {
-                if (!tracker.isInvalid(villager)) converter.getNPC(villager).ifPresent(IVillagerNPC::stopExchangeables);
+                if (tracker.isInvalid(villager, true)) continue;
+                converter.getNPC(villager).ifPresent(IVillagerNPC::stopExchangeables);
             }
         }
     }
@@ -250,6 +275,7 @@ public final class RealisticVillagers extends JavaPlugin {
                     getServer().getScheduler().runTask(this, () -> {
                         for (World world : getServer().getWorlds()) {
                             for (Villager villager : world.getEntitiesByClass(Villager.class)) {
+                                if (tracker.isInvalid(villager, true)) continue;
                                 converter.getNPC(villager).ifPresent(IVillagerNPC::refreshBrain);
                             }
                         }
@@ -289,7 +315,7 @@ public final class RealisticVillagers extends JavaPlugin {
 
         Predicate<FileConfiguration> noVersion = temp -> !temp.contains("config-version");
 
-        // We need to change the previous %partner% to %current-partner% since now %partner% behaves differently (vX.X{0} -> v3.0{1}).
+        // We need to change the previous %partner% to %current-partner% since now %partner% behaves differently, only for V = X.
         handleConfigChanges(
                 file,
                 config,
@@ -306,7 +332,33 @@ public final class RealisticVillagers extends JavaPlugin {
                 },
                 1);
 
-        // Previously @interact-fail.not-allowed was a single line message, now is a map.
+        // We need to remove @gui.new-skin to prevent duplicate issue, only for V = 1.
+        handleConfigChanges(
+                file,
+                config,
+                "config.yml",
+                temp -> temp.getInt("config-version") == 1,
+                temp -> temp.set("gui.new-skin", null),
+                2);
+
+        // Replace @only-for-family with @only-if-allowed, only for V < 3.
+        handleConfigChanges(
+                file,
+                config,
+                "config.yml",
+                temp -> temp.getInt("config-version") < 3,
+                temp -> {
+                    String pathToSetHome = "gui.main.items.set-home.";
+                    temp.set(pathToSetHome + "only-for-family", null);
+                    temp.set(pathToSetHome + "only-if-allowed", false);
+
+                    String pathToCombat = "gui.main.items.combat.";
+                    temp.set(pathToCombat + "only-for-family", null);
+                    temp.set(pathToCombat + "only-if-allowed", false);
+                },
+                3);
+
+        // Previously @interact-fail.not-allowed was a single line message, now is a map; only for V = X.
         handleConfigChanges(
                 file,
                 config,
@@ -386,7 +438,15 @@ public final class RealisticVillagers extends JavaPlugin {
     }
 
     public @NotNull Shape createWhistle() {
-        return createCraftableItem("whistle", "whistle", isWhistleKey);
+        return createCraftableItem("whistle", isWhistleKey);
+    }
+
+    public @NotNull Shape createCross() {
+        return createCraftableItem("cross", isCrossKey);
+    }
+
+    private @NotNull Shape createCraftableItem(String item, NamespacedKey identifier) {
+        return createCraftableItem(item, item, identifier);
     }
 
     private @NotNull Shape createCraftableItem(String item, String recipeName, NamespacedKey identifier) {
@@ -404,6 +464,10 @@ public final class RealisticVillagers extends JavaPlugin {
     }
 
     public ItemBuilder getItem(String path) {
+        return getItem(path, null);
+    }
+
+    public ItemBuilder getItem(String path, @Nullable IVillagerNPC npc) {
         FileConfiguration config = getConfig();
 
         String name = config.getString(path + ".display-name");
@@ -426,7 +490,9 @@ public final class RealisticVillagers extends JavaPlugin {
         }
 
         if (material == Material.PLAYER_HEAD && url != null) {
-            builder.setHead(url, true);
+            // Use UUID from path to allow stacking heads.
+            UUID itemUUID = UUID.nameUUIDFromBytes(path.getBytes());
+            builder.setHead(itemUUID, url.equals("SELF") ? getNPCTextureURL(npc) : url, true);
         }
 
         for (String flag : config.getStringList(path + ".flags")) {
@@ -515,6 +581,15 @@ public final class RealisticVillagers extends JavaPlugin {
         return builder;
     }
 
+    public String getNPCTextureURL(@Nullable IVillagerNPC npc) {
+        if (Config.DISABLE_SKINS.asBool()) return VILLAGER_HEAD_TEXTURE;
+
+        if (npc == null) return UNKNOWN_HEAD_TEXTURE;
+
+        WrappedSignedProperty textures = tracker.getTextures(npc.getSex(), "none", npc.getSkinTextureId());
+        return textures.getName().equals("error") ? UNKNOWN_HEAD_TEXTURE : PluginUtils.getURLFromTexture(textures.getValue());
+    }
+
     private @NotNull Set<Color> getColors(@NotNull FileConfiguration config, String path, String effect, String needed) {
         Set<Color> colors = new HashSet<>();
         for (String colorString : config.getStringList(path + ".firework.firework-effects." + effect + "." + needed)) {
@@ -594,11 +669,15 @@ public final class RealisticVillagers extends JavaPlugin {
         loots.put("inventory-items", createLoot("inventory-items"));
     }
 
-    public boolean isEnabledIn(World world) {
+    public boolean isDisabledIn(@NotNull World world) {
+        return !isEnabledIn(world.getName());
+    }
+
+    public boolean isEnabledIn(String world) {
         String type = Config.WORLDS_FILTER_TYPE.asString();
         if (type == null || !FILTER_TYPES.contains(type.toUpperCase())) return true;
 
-        boolean contains = worlds.contains(world.getName());
+        boolean contains = worlds.contains(world);
         return type.equalsIgnoreCase("WHITELIST") == contains;
     }
 
@@ -645,17 +724,24 @@ public final class RealisticVillagers extends JavaPlugin {
     }
 
     public void equipVillager(Villager villager, boolean force) {
+        if (invalidLoots()) return;
+
         Optional<IVillagerNPC> npc = converter.getNPC(villager);
-        if (npc.isEmpty() || npc.get().isEquipped() || !force) return;
+        if (npc.isEmpty()
+                || npc.get().isEquipped()
+                || !force
+                || tracker.isInvalid(villager, true)) return;
 
         EntityEquipment equipment = villager.getEquipment();
         if (equipment == null) return;
 
         Map<EquipmentSlot, ItemLoot> equipped = new HashMap<>();
+        npc.get().setEquipped(true);
 
         for (EquipmentSlot slot : EquipmentSlot.values()) {
             String name = slotName(slot);
             List<ItemLoot> loots = this.loots.get(name);
+            if (loots == null) continue;
 
             double chance = Math.random();
             for (ItemLoot loot : loots) {
@@ -673,8 +759,11 @@ public final class RealisticVillagers extends JavaPlugin {
             }
         }
 
+        List<ItemLoot> loots = this.loots.get("inventory-items");
+        if (loots == null) return;
+
         double chance = Math.random();
-        for (ItemLoot loot : loots.get("inventory-items")) {
+        for (ItemLoot loot : loots) {
             if (chance > loot.chance()) continue;
 
             ItemStack item = loot.getItem();
@@ -696,8 +785,16 @@ public final class RealisticVillagers extends JavaPlugin {
                 villager.getInventory().addItem(item);
             }
         }
+    }
 
-        npc.get().setEquipped(true);
+    private boolean invalidLoots() {
+        if (loots.isEmpty()) return true;
+
+        for (EquipmentSlot slot : EquipmentSlot.values()) {
+            if (loots.get(slotName(slot)) != null) return false;
+        }
+
+        return loots.get("inventory-items") == null;
     }
 
     private boolean testBothHand(Map<EquipmentSlot, ItemLoot> equipped, Predicate<ItemStack> predicate) {

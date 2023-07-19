@@ -174,8 +174,6 @@ public interface IVillagerNPC {
 
     void shakeHead(Player at);
 
-    void convertToVanilla();
-
     IVillagerNPC getOffline();
 
     LastKnownPosition getLastKnownPosition();
@@ -195,4 +193,6 @@ public interface IVillagerNPC {
     void stopExchangeables();
 
     void refreshBrain();
+
+    boolean isReviving();
 }

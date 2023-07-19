@@ -9,7 +9,7 @@
     <parent>
         <groupId>me.matsubara</groupId>
         <artifactId>realisticvillagers-parent</artifactId>
-        <version>3.0.4</version>
+        <version>3.0.6</version>
     </parent>
 
     <pluginRepositories>
@@ -53,7 +53,7 @@
                                 </relocation>
                                 <relocation>
                                     <pattern>org.jsoup</pattern>
-                                    <shadedPattern>me.matsubara.realisticvillagers.util</shadedPattern>
+                                    <shadedPattern>me.matsubara.realisticvillagers.util.jsoup</shadedPattern>
                                 </relocation>
                                 <relocation>
                                     <pattern>org.mineskin</pattern>
@@ -109,6 +109,10 @@
         <repository>
             <id>sonatype</id>
             <url>https://oss.sonatype.org/content/groups/public/</url>
+        </repository>
+        <repository>
+            <id>sonatype-snapshots</id>
+            <url>https://s01.oss.sonatype.org/content/repositories/snapshots/</url>
         </repository>
         <repository>
             <id>dmulloy2-repo</id>
@@ -171,6 +175,26 @@
             <groupId>com.github.aematsubara</groupId>
             <artifactId>MineskinClient</artifactId>
             <version>master-SNAPSHOT</version>
+        </dependency>
+        <!-- EliteMobs -->
+        <dependency>
+            <groupId>com.magmaguy</groupId>
+            <artifactId>EliteMobs</artifactId>
+            <version>8.5.4-SNAPSHOT</version>
+            <scope>provided</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!-- VTL -->
+        <dependency>
+            <groupId>com.github.PretzelJohn</groupId>
+            <artifactId>VillagerTradeLimiter</artifactId>
+            <version>1.5.6</version>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
 </project>

@@ -1,4 +1,4 @@
-package me.matsubara.realisticvillagers.listener.npc;
+package me.matsubara.realisticvillagers.handler.npc;
 
 import com.comphenix.protocol.PacketType;
 import com.comphenix.protocol.ProtocolLibrary;
@@ -38,12 +38,13 @@ public class NPCHandler implements SpawnCustomizer {
 
     public NPCHandler(@NotNull RealisticVillagers plugin, Villager villager) {
         this.plugin = plugin;
+        // No need to check if it's invalid, already checked in VillagerTracker#spawnNPC().
         this.villager = plugin.getConverter().getNPC(villager).orElse(null);
     }
 
     @Override
     public void handleSpawn(@NotNull NPC npc, @NotNull Player player) {
-        Location location = villager.bukkit().getLocation();
+        Location location = npc.getLocation();
 
         npc.rotation().queueRotate(location.getYaw(), location.getPitch()).send(player);
 
